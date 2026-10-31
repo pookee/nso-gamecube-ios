@@ -1,0 +1,60 @@
+#import <Foundation/Foundation.h>
+
+#import "NSOGCController.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@class NSOGCManager;
+
+@protocol NSOGCManagerDelegate <NSObject>
+@optional
+// The controller finished its setup and is sending input.
+- (void)manager:(NSOGCManager *)manager didConnectController:(NSOGCController *)controller
+    NS_SWIFT_NAME(manager(_:didConnect:));
+- (void)manager:(NSOGCManager *)manager didDisconnectController:(NSOGCController *)controller
+    NS_SWIFT_NAME(manager(_:didDisconnect:));
+- (void)manager:(NSOGCManager *)manager bluetoothAvailabilityDidChange:(BOOL)available
+    NS_SWIFT_NAME(manager(_:bluetoothAvailabilityDidChange:));
+@end
+
+// Finds, connects and sets up NSO GameCube controllers over CoreBluetooth.
+//
+// A controller is found while it advertises: after its SYNC button is pressed
+// (about 60 seconds), or when it wakes and looks for its last host. Once set
+// up, the manager remembers it and connects again on its own whenever it is
+// in range. The app needs NSBluetoothAlwaysUsageDescription in its Info.plist.
+@interface NSOGCManager : NSObject
+
+@property(class, nonatomic, readonly) NSOGCManager *sharedManager NS_SWIFT_NAME(shared);
+
+@property(nonatomic, weak, nullable) id<NSOGCManagerDelegate> delegate;
+
+// Where delegate calls, input handlers and log lines are delivered. Main by
+// default. Set it before start.
+@property(nonatomic, strong) dispatch_queue_t callbackQueue;
+
+// Receives one line per event (discovery, setup steps, errors), on the
+// callbackQueue.
+@property(nonatomic, copy, nullable) void (^logHandler)(NSString *line);
+
+// Controllers that are set up and sending input, in player order.
+@property(nonatomic, readonly) NSArray<NSOGCController *> *controllers;
+
+// How many controllers to connect before scanning stops. 4 by default.
+@property(nonatomic) NSUInteger maximumControllers;
+
+@property(nonatomic, readonly, getter=isRunning) BOOL running;
+
+// Turns Bluetooth on for the app (the first call shows the permission prompt),
+// reconnects remembered controllers and scans for new ones.
+- (void)start;
+
+// Stops scanning and disconnects every controller.
+- (void)stop;
+
+// Forgets remembered controllers. Connected ones stay connected.
+- (void)forgetControllers;
+
+@end
+
+NS_ASSUME_NONNULL_END

@@ -1,0 +1,43 @@
+# Test app for NSOGCKit: shows a connected controller's input live and keeps
+# a log in Documents/nsogc.log (visible in the Files app).
+# Generate the project with `xcodegen` in this folder, then set your team.
+name: NSOGCDemo
+options:
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  NSOGCKit:
+    path: ..
+targets:
+  NSOGCDemo:
+    type: application
+    platform: iOS
+    sources:
+      - NSOGCDemo
+    dependencies:
+      - package: NSOGCKit
+    info:
+      path: NSOGCDemo/Info.plist
+      properties:
+        CFBundleDisplayName: GC Pad Test
+        NSBluetoothAlwaysUsageDescription: Connects to your Nintendo Switch Online GameCube controller.
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.nsogc.demo
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
