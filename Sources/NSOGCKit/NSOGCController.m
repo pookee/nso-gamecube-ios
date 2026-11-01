@@ -194,7 +194,10 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
 - (NSString *)name {
   if (_wired)
     return _wiredName;
-  return _peripheral.name.length ? _peripheral.name : @"NSO GameCube Controller";
+  // Its Bluetooth name is literally "DeviceName" (NSOGCManager matches on it):
+  // say what it is instead.
+  NSString *name = _peripheral.name;
+  return name.length && ![name isEqualToString:@"DeviceName"] ? name : @"NSO GameCube Controller";
 }
 
 - (BOOL)isWired {
