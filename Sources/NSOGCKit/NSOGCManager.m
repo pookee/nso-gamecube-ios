@@ -50,6 +50,7 @@ static NSString *NSOGCHexData(NSData *data) {
   os_unfair_lock _lock;
   NSArray<NSOGCController *> *_readyControllers;
   BOOL _running;
+  BOOL _scanning;
   void (^_logHandler)(NSString *);
 }
 
@@ -65,7 +66,10 @@ static NSString *NSOGCHexData(NSData *data) {
 - (instancetype)init {
   self = [super init];
   if (self) {
-    _queue = dispatch_queue_create("nsogc.bluetooth", DISPATCH_QUEUE_SERIAL);
+    // Input reports go through this queue: give it the highest priority.
+    _queue = dispatch_queue_create(
+        "nsogc.bluetooth",
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
     _osLog = os_log_create("nsogc", "bluetooth");
     _callbackQueue = dispatch_get_main_queue();
     _maximumControllers = 4;
@@ -92,6 +96,17 @@ static NSString *NSOGCHexData(NSData *data) {
   BOOL running = _running;
   os_unfair_lock_unlock(&_lock);
   return running;
+}
+
+- (BOOL)isScanning {
+  os_unfair_lock_lock(&_lock);
+  BOOL scanning = _scanning;
+  os_unfair_lock_unlock(&_lock);
+  return scanning;
+}
+
+- (BOOL)hasRememberedControllers {
+  return [NSUserDefaults.standardUserDefaults stringArrayForKey:kKnownControllersKey].count > 0;
 }
 
 - (void (^)(NSString *))logHandler {
@@ -133,6 +148,7 @@ static NSString *NSOGCHexData(NSData *data) {
     [self setRunning:NO];
     if (self->_central.state == CBManagerStatePoweredOn)
       [self->_central stopScan];
+    [self setScanningFlag:NO];
     for (NSOGCController *controller in self->_tracked.allValues)
       [self->_central cancelPeripheralConnection:controller.peripheral];
     [self log:@"stopped"];
@@ -146,11 +162,24 @@ static NSString *NSOGCHexData(NSData *data) {
   });
 }
 
+- (void)disconnectController:(NSOGCController *)controller {
+  dispatch_async(_queue, ^{
+    if (self->_tracked[controller.identifier] == controller)
+      [self->_central cancelPeripheralConnection:controller.peripheral];
+  });
+}
+
 #pragma mark - Internal (Bluetooth queue)
 
 - (void)setRunning:(BOOL)running {
   os_unfair_lock_lock(&_lock);
   _running = running;
+  os_unfair_lock_unlock(&_lock);
+}
+
+- (void)setScanningFlag:(BOOL)scanning {
+  os_unfair_lock_lock(&_lock);
+  _scanning = scanning;
   os_unfair_lock_unlock(&_lock);
 }
 
@@ -223,8 +252,10 @@ static NSString *NSOGCHexData(NSData *data) {
 }
 
 - (void)updateScanning {
-  if (_central.state != CBManagerStatePoweredOn)
+  if (_central.state != CBManagerStatePoweredOn) {
+    [self setScanningFlag:NO];
     return;
+  }
   BOOL wantsScan = _wantsRunning && [self readyCount] < _maximumControllers;
   if (wantsScan && !_central.isScanning) {
     [_central scanForPeripheralsWithServices:nil
@@ -234,6 +265,7 @@ static NSString *NSOGCHexData(NSData *data) {
     [_central stopScan];
     [self log:@"scanning stopped"];
   }
+  [self setScanningFlag:wantsScan];
 }
 
 - (void)connect:(CBPeripheral *)peripheral reason:(NSString *)reason {
@@ -294,6 +326,7 @@ static NSString *NSOGCHexData(NSData *data) {
     [self resume];
   } else {
     // Bluetooth went away: every connection is gone with it.
+    [self setScanningFlag:NO];
     for (NSOGCController *controller in _tracked.allValues)
       [controller didDisconnect];
     [_tracked removeAllObjects];

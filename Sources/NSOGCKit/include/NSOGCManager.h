@@ -43,7 +43,20 @@ NS_ASSUME_NONNULL_BEGIN
 // How many controllers to connect before scanning stops. 4 by default.
 @property(nonatomic) NSUInteger maximumControllers;
 
+// When YES, input handlers run on the Bluetooth queue as each report arrives,
+// with no hop to callbackQueue: the lowest latency, for handlers that are fast
+// and thread-safe (a game's input state behind a lock, say). NO by default.
+// Set it before start.
+@property(nonatomic) BOOL deliversInputOnBluetoothQueue;
+
 @property(nonatomic, readonly, getter=isRunning) BOOL running;
+
+// Looking for a controller in SYNC mode: running, and fewer controllers than
+// maximumControllers are connected.
+@property(nonatomic, readonly, getter=isScanning) BOOL scanning;
+
+// A controller was set up before and will be reconnected when it is in range.
+@property(nonatomic, readonly) BOOL hasRememberedControllers;
 
 // Turns Bluetooth on for the app (the first call shows the permission prompt),
 // reconnects remembered controllers and scans for new ones.
@@ -54,6 +67,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Forgets remembered controllers. Connected ones stay connected.
 - (void)forgetControllers;
+
+// Disconnects one controller. A remembered one is reconnected when it comes
+// back, unless it was forgotten first.
+- (void)disconnectController:(NSOGCController *)controller NS_SWIFT_NAME(disconnect(_:));
 
 @end
 

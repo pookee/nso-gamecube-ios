@@ -143,4 +143,18 @@ final class ProtocolTests: XCTestCase {
     // Another company is not.
     XCTAssertEqual(matches([0x4C, 0x00, 0x7E, 0x05, 0x73, 0x20]).0, false)
   }
+
+  // The Swift names the README documents. Creating the manager does not touch
+  // Bluetooth; only start does.
+  func testSwiftAPINames() {
+    let manager = NSOGCManager.shared
+    XCTAssertFalse(manager.isRunning)
+    XCTAssertFalse(manager.isScanning)
+    XCTAssertEqual(manager.maximumControllers, 4)
+    XCTAssertFalse(manager.deliversInputOnBluetoothQueue)
+    XCTAssertTrue(manager.controllers.isEmpty)
+    let disconnect: (NSOGCController) -> Void = manager.disconnect
+    _ = disconnect
+    _ = manager.hasRememberedControllers
+  }
 }

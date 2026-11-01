@@ -235,12 +235,17 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   _status = NSOGCControllerStatusDisconnected;
   memset(&_state, 0, sizeof _state);
   memset(&_raw, 0, sizeof _raw);
-  BOOL schedule = !_deliveryPending && _inputHandler != nil;
+  nsogc_state state = _state;
+  NSOGCInputHandler handler = _inputHandler;
+  BOOL immediate = _manager.deliversInputOnBluetoothQueue;
+  BOOL schedule = !immediate && !_deliveryPending && handler != nil;
   if (schedule)
     _deliveryPending = YES;
   os_unfair_lock_unlock(&_lock);
   // A neutral state releases every button the game still holds.
-  if (schedule)
+  if (immediate && handler != nil)
+    handler(self, state);
+  else if (schedule)
     dispatch_async(_callbackQueue, ^{ [self deliverLatestState]; });
 }
 
@@ -636,7 +641,10 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   _raw = raw;
   nsogc_normalize(&_raw, &_calibration, &_state);
   nsogc_calibration calibration = _calibration;
-  BOOL schedule = !_deliveryPending && _inputHandler != nil;
+  nsogc_state state = _state;
+  NSOGCInputHandler handler = _inputHandler;
+  BOOL immediate = _manager.deliversInputOnBluetoothQueue;
+  BOOL schedule = !immediate && !_deliveryPending && handler != nil;
   if (schedule)
     _deliveryPending = YES;
   os_unfair_lock_unlock(&_lock);
@@ -645,7 +653,9 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
     [_manager log:@"%@: stick centres %.0f,%.0f, c-stick %.0f,%.0f", self.logName,
                   calibration.stick_center_x, calibration.stick_center_y,
                   calibration.cstick_center_x, calibration.cstick_center_y];
-  if (schedule)
+  if (immediate && handler != nil)
+    handler(self, state);
+  else if (schedule)
     dispatch_async(_callbackQueue, ^{ [self deliverLatestState]; });
 }
 

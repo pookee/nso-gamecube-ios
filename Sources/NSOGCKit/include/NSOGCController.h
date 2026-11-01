@@ -37,7 +37,9 @@ typedef void (^NSOGCInputHandler)(NSOGCController *controller, nsogc_state state
 
 // Called on the manager's callbackQueue with every new report. Reports that
 // arrive while an earlier one is still queued replace it, so a busy main
-// thread only ever gets the latest state.
+// thread only ever gets the latest state. With the manager's
+// deliversInputOnBluetoothQueue, called on the Bluetooth queue for every
+// report instead.
 @property(nonatomic, copy, nullable) NSOGCInputHandler inputHandler;
 
 - (void)setRumble:(BOOL)on;
