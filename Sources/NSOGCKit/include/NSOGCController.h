@@ -27,6 +27,9 @@ typedef void (^NSOGCInputHandler)(NSOGCController *controller, nsogc_state state
 // 0-based player, shown on the controller's LEDs.
 @property(nonatomic, readonly) NSInteger playerIndex;
 
+// Connected with a USB cable (macOS) rather than over Bluetooth.
+@property(nonatomic, readonly, getter=isWired) BOOL wired;
+
 // Latest input, normalized and as received. Safe to read from any thread.
 @property(nonatomic, readonly) nsogc_state state;
 @property(nonatomic, readonly) nsogc_raw_input rawInput;

@@ -54,6 +54,26 @@ final class ProtocolTests: XCTestCase {
     XCTAssertEqual(raw.trigger_r, 34)
   }
 
+  // A report captured from a controller on a Mac's USB port, at rest.
+  func testUSBReportDecodesAfterItsReportID() {
+    var report = [UInt8](repeating: 0, count: Int(NSOGC_USB_REPORT_SIZE))
+    let head: [UInt8] = [0x0A, 0xE1, 0x20, 0x00, 0x00, 0x00, 0xDF, 0x17, 0x7F, 0xAA, 0xE7, 0x80, 0x30, 0x20, 0x20]
+    report.replaceSubrange(0..<head.count, with: head)
+    var raw = nsogc_raw_input()
+    let format = report.withUnsafeBufferPointer {
+      nsogc_parse_usb_report($0.baseAddress, $0.count, &raw)
+    }
+    XCTAssertEqual(format, NSOGC_REPORT_NATIVE)
+    XCTAssertEqual(raw.counter, 0xE1)
+    XCTAssertEqual(raw.buttons, 0)
+    XCTAssertEqual(raw.stick_x, 2015)
+    XCTAssertEqual(raw.stick_y, 2033)
+    XCTAssertEqual(raw.cstick_x, 1962)
+    XCTAssertEqual(raw.cstick_y, 2062)
+    XCTAssertEqual(raw.trigger_l, 32)
+    XCTAssertEqual(raw.trigger_r, 32)
+  }
+
   func testShortNotificationsAreNotInput() {
     let (format, raw) = parse([UInt8](repeating: 0xAA, count: 16))
     XCTAssertEqual(format, NSOGC_REPORT_INVALID)
@@ -120,6 +140,10 @@ final class ProtocolTests: XCTestCase {
     XCTAssertEqual(
       frame { nsogc_command_vibration($0, true) },
       [0x0A, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00])
+    // The same frames over USB, as the controller's USB enabler sends them.
+    var leds = frame { nsogc_command_player_leds($0, nsogc_player_led_mask(0)) }
+    nsogc_command_for_usb(&leds, leds.count)
+    XCTAssertEqual(leds, [0x09, 0x91, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0])
     XCTAssertEqual(nsogc_player_led_mask(0), 0x01)
     XCTAssertEqual(nsogc_player_led_mask(3), 0x0F)
     XCTAssertEqual(nsogc_player_led_mask(9), 0x0F)

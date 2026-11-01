@@ -3,6 +3,10 @@
 #import <math.h>
 #import <os/lock.h>
 
+#if TARGET_OS_OSX
+#import <IOUSBHost/IOUSBHost.h>
+#endif
+
 // Writing 01 00 to the control service's write characteristic turns the
 // controller's protocol on. The Nintendo service carries the command channel.
 static NSString *const kControlServiceUUID = @"00C5AF5D-1964-4E30-8F51-1956F96BD280";
@@ -101,6 +105,17 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   CFAbsoluteTime _lastSummary;
   dispatch_source_t _setupTimer;
   dispatch_source_t _keepAliveTimer;
+
+  // Wired controllers (macOS USB) only.
+  BOOL _wired;
+  NSUUID *_wiredIdentifier;
+  NSString *_wiredName;
+#if TARGET_OS_OSX
+  IOHIDDeviceRef _hidDevice;
+  uint32_t _usbLocation;
+  IOUSBHostInterface *_usbInterface;
+  IOUSBHostPipe *_usbCommandPipe;
+#endif
 }
 
 - (instancetype)init {
@@ -129,14 +144,61 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   return self;
 }
 
+#if TARGET_OS_OSX
+- (instancetype)initWithHIDDevice:(IOHIDDeviceRef)device
+                          manager:(NSOGCManager *)manager
+                            queue:(dispatch_queue_t)queue
+                    callbackQueue:(dispatch_queue_t)callbackQueue {
+  self = [super init];
+  if (self) {
+    _manager = manager;
+    _queue = queue;
+    _callbackQueue = callbackQueue;
+    _lock = OS_UNFAIR_LOCK_INIT;
+    _status = NSOGCControllerStatusConnecting;
+    _playerIndex = 0;
+    nsogc_calibration_default(&_calibration);
+    _subscriptions = [NSMutableArray array];
+    _commandQueue = [NSMutableArray array];
+    _wired = YES;
+    _hidDevice = (IOHIDDeviceRef)CFRetain(device);
+    NSString *product = (__bridge NSString *)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
+    _wiredName = product.length ? product : @"NSO GameCube Controller";
+    NSNumber *location = (__bridge NSNumber *)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDLocationIDKey));
+    _usbLocation = location.unsignedIntValue;
+    // Stable for a given USB port.
+    uuid_t bytes = {'n', 's', 'o', 'g', 'c', '-', 'u', 's', 'b', 0, 0, 0, 0, 0, 0, 0};
+    uint32_t port = _usbLocation;
+    memcpy(bytes + 12, &port, sizeof port);
+    _wiredIdentifier = [[NSUUID alloc] initWithUUIDBytes:bytes];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  if (_hidDevice != NULL)
+    CFRelease(_hidDevice);
+}
+
+- (IOHIDDeviceRef)hidDevice {
+  return _hidDevice;
+}
+#endif
+
 #pragma mark - Public state
 
 - (NSUUID *)identifier {
-  return _peripheral.identifier;
+  return _wired ? _wiredIdentifier : _peripheral.identifier;
 }
 
 - (NSString *)name {
+  if (_wired)
+    return _wiredName;
   return _peripheral.name.length ? _peripheral.name : @"NSO GameCube Controller";
+}
+
+- (BOOL)isWired {
+  return _wired;
 }
 
 - (NSOGCControllerStatus)status {
@@ -213,7 +275,7 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
 
 - (NSString *)logName {
   return [NSString stringWithFormat:@"%@ [%@]", self.name,
-                                    [_peripheral.identifier.UUIDString substringToIndex:8]];
+                                    [self.identifier.UUIDString substringToIndex:8]];
 }
 
 #pragma mark - Connection lifecycle (Bluetooth queue)
@@ -231,6 +293,13 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   [self cancelTimers];
   [_commandQueue removeAllObjects];
   _inputCharacteristic = nil;
+#if TARGET_OS_OSX
+  if (_wired) {
+    [_usbInterface destroy];
+    _usbInterface = nil;
+    _usbCommandPipe = nil;
+  }
+#endif
   os_unfair_lock_lock(&_lock);
   _status = NSOGCControllerStatusDisconnected;
   memset(&_state, 0, sizeof _state);
@@ -280,8 +349,9 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   dispatch_resume(_setupTimer);
 }
 
+// Bluetooth only: the controller drops a link that sees no host traffic.
 - (void)startKeepAlive {
-  if (_keepAliveTimer != nil || _commandCharacteristic == nil)
+  if (_wired || _keepAliveTimer != nil || _commandCharacteristic == nil)
     return;
   _keepAliveTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
   dispatch_source_set_timer(_keepAliveTimer, dispatch_time(DISPATCH_TIME_NOW, kKeepAliveInterval),
@@ -514,6 +584,10 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
 }
 
 - (void)enqueueCommand:(NSData *)command {
+  if (_wired) {
+    [self sendUSBCommand:command];
+    return;
+  }
   if (_commandCharacteristic == nil)
     return;
   if (_commandQueue.count >= kMaxQueuedCommands)
@@ -577,9 +651,17 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
   nsogc_report_format format = nsogc_parse_report(value.bytes, value.length, &raw);
   if (format == NSOGC_REPORT_INVALID)
     return;
+  [self didReceiveInput:raw format:format bytes:value.bytes length:value.length];
+}
+
+// Both transports, once a report is decoded.
+- (void)didReceiveInput:(nsogc_raw_input)raw
+                 format:(nsogc_report_format)format
+                  bytes:(const uint8_t *)bytes
+                 length:(NSUInteger)length {
   if (_reportCount < 3)
     [_manager log:@"%@: report %lu (%@): %@", self.logName, (unsigned long)_reportCount + 1,
-                  NSOGCFormatName(format), NSOGCHex(value, 24)];
+                  NSOGCFormatName(format), NSOGCHex([NSData dataWithBytes:bytes length:length], 24)];
   _reportCount++;
   [self acceptRawInput:raw];
 
@@ -596,6 +678,124 @@ static NSString *NSOGCFormatName(nsogc_report_format format) {
     [_manager log:@"%@: input reports arriving", self.logName];
     [self becomeReady];
   }
+}
+
+#pragma mark - USB (macOS)
+
+#if TARGET_OS_OSX
+// Interface 1 of the controller on this USB port.
+static BOOL NSOGCIsCommandInterface(io_service_t service, uint32_t location) {
+  NSNumber *vendor = CFBridgingRelease(
+      IORegistryEntryCreateCFProperty(service, CFSTR("idVendor"), kCFAllocatorDefault, 0));
+  NSNumber *product = CFBridgingRelease(
+      IORegistryEntryCreateCFProperty(service, CFSTR("idProduct"), kCFAllocatorDefault, 0));
+  NSNumber *number = CFBridgingRelease(
+      IORegistryEntryCreateCFProperty(service, CFSTR("bInterfaceNumber"), kCFAllocatorDefault, 0));
+  NSNumber *port = CFBridgingRelease(IORegistryEntrySearchCFProperty(
+      service, kIOServicePlane, CFSTR("locationID"), kCFAllocatorDefault,
+      kIORegistryIterateRecursively | kIORegistryIterateParents));
+  return vendor.intValue == NSOGC_VENDOR_ID && product.intValue == NSOGC_PRODUCT_ID &&
+         number.intValue == NSOGC_USB_COMMAND_INTERFACE &&
+         (location == 0 || port.unsignedIntValue == location);
+}
+
+// Reports start once the default report command reaches interface 1's bulk
+// OUT endpoint; HID only carries them in, to the manager (handleUSBReport:).
+- (void)startWired {
+  [self setStatus:NSOGCControllerStatusInitializing];
+  _step = NSOGCSetupStepConfiguring;
+  [self startSetupTimer];
+  [_manager log:@"%@: connected over USB", self.logName];
+  NSString *problem = [self openUSBCommandPipe];
+  if (problem != nil) {
+    [self fail:problem];
+    return;
+  }
+  uint8_t frame[16];
+  size_t length = nsogc_command_default_report(frame);
+  [self enqueueCommand:[NSData dataWithBytes:frame length:length]];
+  [self sendPlayerLeds];
+  [_manager log:@"%@: commands sent over USB, waiting for input reports", self.logName];
+}
+
+- (NSString *)openUSBCommandPipe {
+  io_iterator_t iterator = IO_OBJECT_NULL;
+  if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOUSBHostInterface"),
+                                   &iterator) != KERN_SUCCESS)
+    return @"cannot list USB interfaces";
+  io_service_t service = IO_OBJECT_NULL;
+  io_service_t candidate;
+  while ((candidate = IOIteratorNext(iterator))) {
+    if (service == IO_OBJECT_NULL && NSOGCIsCommandInterface(candidate, _usbLocation))
+      service = candidate;
+    else
+      IOObjectRelease(candidate);
+  }
+  IOObjectRelease(iterator);
+  if (service == IO_OBJECT_NULL)
+    return @"USB interface 1 not found";
+
+  NSError *error = nil;
+  _usbInterface = [[IOUSBHostInterface alloc] initWithIOService:service
+                                                        options:IOUSBHostObjectInitOptionsNone
+                                                          queue:_queue
+                                                          error:&error
+                                                interestHandler:nil];
+  IOObjectRelease(service);
+  if (_usbInterface == nil)
+    return [NSString stringWithFormat:@"cannot open USB interface 1: %@",
+                                      error.localizedDescription];
+  const IOUSBConfigurationDescriptor *configuration = _usbInterface.configurationDescriptor;
+  const IOUSBInterfaceDescriptor *interface = _usbInterface.interfaceDescriptor;
+  const IOUSBEndpointDescriptor *endpoint = NULL;
+  while ((endpoint = IOUSBGetNextEndpointDescriptor(configuration, interface,
+                                                    (const IOUSBDescriptorHeader *)endpoint))) {
+    if (IOUSBGetEndpointType(endpoint) == kIOUSBEndpointTypeBulk &&
+        IOUSBGetEndpointDirection(endpoint) == kIOUSBEndpointDirectionOut) {
+      _usbCommandPipe = [_usbInterface copyPipeWithAddress:endpoint->bEndpointAddress error:&error];
+      break;
+    }
+  }
+  if (_usbCommandPipe == nil)
+    return [NSString stringWithFormat:@"no bulk OUT endpoint on USB interface 1 (%@)",
+                                      error.localizedDescription ?: @"none listed"];
+  return nil;
+}
+
+- (void)handleUSBReport:(const uint8_t *)report length:(NSUInteger)length {
+  if (_step == NSOGCSetupStepIdle)
+    return;
+  nsogc_raw_input raw;
+  nsogc_report_format format = nsogc_parse_usb_report(report, length, &raw);
+  if (format != NSOGC_REPORT_INVALID)
+    [self didReceiveInput:raw format:format bytes:report length:length];
+}
+#endif
+
+- (void)sendUSBCommand:(NSData *)command {
+#if TARGET_OS_OSX
+  if (_usbCommandPipe == nil)
+    return;
+  NSMutableData *frame = [command mutableCopy];
+  nsogc_command_for_usb(frame.mutableBytes, frame.length);
+  NSError *error = nil;
+  __weak NSOGCController *weakSelf = self;
+  BOOL queued = [_usbCommandPipe
+      enqueueIORequestWithData:frame
+             completionTimeout:1.0
+                         error:&error
+             completionHandler:^(IOReturn status, NSUInteger bytesTransferred) {
+               (void)bytesTransferred;
+               NSOGCController *strongSelf = weakSelf;
+               if (status != kIOReturnSuccess && strongSelf != nil)
+                 [strongSelf->_manager log:@"%@: USB command failed (0x%08X)", strongSelf.logName,
+                                           status];
+             }];
+  if (!queued)
+    [_manager log:@"%@: USB command not sent: %@", self.logName, error.localizedDescription];
+#else
+  (void)command;
+#endif
 }
 
 - (void)handleResponse:(NSData *)value from:(CBCharacteristic *)characteristic {

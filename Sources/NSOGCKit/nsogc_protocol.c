@@ -68,6 +68,13 @@ nsogc_report_format nsogc_parse_report(const uint8_t *data, size_t length,
   return NSOGC_REPORT_PRO_SHORT;
 }
 
+nsogc_report_format nsogc_parse_usb_report(const uint8_t *data, size_t length,
+                                           nsogc_raw_input *out) {
+  if (data != NULL && length == NSOGC_USB_REPORT_SIZE && data[0] == NSOGC_USB_REPORT_ID)
+    return nsogc_parse_report(data + 1, NSOGC_NATIVE_REPORT_SIZE, out);
+  return nsogc_parse_report(data, length, out);
+}
+
 void nsogc_calibration_default(nsogc_calibration *calibration) {
   if (calibration == NULL)
     return;
@@ -189,6 +196,11 @@ size_t nsogc_command_default_report(uint8_t out[16]) {
   out[n++] = 0x00;
   memset(out + n, 0xFF, 6);
   return n + 6;
+}
+
+void nsogc_command_for_usb(uint8_t *frame, size_t length) {
+  if (frame != NULL && length > 2)
+    frame[2] = 0x00;
 }
 
 uint8_t nsogc_player_led_mask(int player) {

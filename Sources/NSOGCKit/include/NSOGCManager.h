@@ -17,12 +17,15 @@ NS_ASSUME_NONNULL_BEGIN
     NS_SWIFT_NAME(manager(_:bluetoothAvailabilityDidChange:));
 @end
 
-// Finds, connects and sets up NSO GameCube controllers over CoreBluetooth.
+// Finds, connects and sets up NSO GameCube controllers over CoreBluetooth,
+// and on macOS over USB too.
 //
-// A controller is found while it advertises: after its SYNC button is pressed
-// (about 60 seconds), or when it wakes and looks for its last host. Once set
-// up, the manager remembers it and connects again on its own whenever it is
-// in range. The app needs NSBluetoothAlwaysUsageDescription in its Info.plist.
+// Over Bluetooth a controller is found while it advertises: after its SYNC
+// button is pressed (about 60 seconds), or when it wakes and looks for its
+// last host. Once set up, the manager remembers it and connects again on its
+// own whenever it is in range. The app needs NSBluetoothAlwaysUsageDescription
+// in its Info.plist. Over USB (macOS) a controller is set up as soon as it is
+// plugged in; iOS gives apps no access to USB devices.
 @interface NSOGCManager : NSObject
 
 @property(class, nonatomic, readonly) NSOGCManager *sharedManager NS_SWIFT_NAME(shared);
@@ -42,6 +45,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 // How many controllers to connect before scanning stops. 4 by default.
 @property(nonatomic) NSUInteger maximumControllers;
+
+// Which transports start uses. Both YES by default; USB is macOS only. Set
+// them before start.
+@property(nonatomic) BOOL usesBluetooth;
+@property(nonatomic) BOOL usesUSB;
 
 // When YES, input handlers run on the Bluetooth queue as each report arrives,
 // with no hop to callbackQueue: the lowest latency, for handlers that are fast

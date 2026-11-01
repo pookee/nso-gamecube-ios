@@ -72,6 +72,17 @@ typedef enum {
 nsogc_report_format nsogc_parse_report(const uint8_t *data, size_t length,
                                        nsogc_raw_input *out);
 
+// Over USB the controller is a HID gamepad. Once initialized (two commands
+// on interface 1's bulk OUT endpoint) it sends 64-byte input reports with
+// report ID 0x0A, followed by the native report.
+#define NSOGC_USB_REPORT_ID 0x0A
+#define NSOGC_USB_REPORT_SIZE 64
+#define NSOGC_USB_COMMAND_INTERFACE 1
+
+// Decodes one USB input report, with or without its leading report ID.
+nsogc_report_format nsogc_parse_usb_report(const uint8_t *data, size_t length,
+                                           nsogc_raw_input *out);
+
 typedef struct {
   float stick_center_x, stick_center_y, stick_range_x, stick_range_y;
   float cstick_center_x, cstick_center_y, cstick_range_x, cstick_range_y;
@@ -95,13 +106,18 @@ void nsogc_normalize(const nsogc_raw_input *raw,
                      const nsogc_calibration *calibration, nsogc_state *out);
 
 // Command frames. Each writes the frame into out (sized as noted) and returns
-// its length. Commands go to the command characteristic.
+// its length. Over Bluetooth they go to the command characteristic; over USB
+// to interface 1's bulk OUT endpoint, after nsogc_command_for_usb.
 #define NSOGC_COMMAND_MAX_SIZE 16
 
 size_t nsogc_command_spi_read(uint8_t out[16], uint32_t address, uint8_t size);
 size_t nsogc_command_player_leds(uint8_t out[16], uint8_t mask);
 size_t nsogc_command_vibration(uint8_t out[12], bool on);
 size_t nsogc_command_default_report(uint8_t out[16]);
+
+// Byte 2 of a command names the interface it travels on: 0x01 over
+// Bluetooth, as the builders write it, 0x00 over USB. This rewrites it.
+void nsogc_command_for_usb(uint8_t *frame, size_t length);
 
 // SPI flash address of the device information block (serial number, vendor
 // and product ID).

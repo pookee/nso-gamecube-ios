@@ -46,6 +46,10 @@ static NSString *NSOGCHexData(NSData *data) {
   NSMutableSet<NSUUID *> *_reported;                          // advertisements already logged
   NSMutableDictionary<NSUUID *, NSNumber *> *_lastFailure;
 
+#if TARGET_OS_OSX
+  IOHIDManagerRef _hidManager;
+#endif
+
   // Read from any thread.
   os_unfair_lock _lock;
   NSArray<NSOGCController *> *_readyControllers;
@@ -73,6 +77,8 @@ static NSString *NSOGCHexData(NSData *data) {
     _osLog = os_log_create("nsogc", "bluetooth");
     _callbackQueue = dispatch_get_main_queue();
     _maximumControllers = 4;
+    _usesBluetooth = YES;
+    _usesUSB = YES;
     _tracked = [NSMutableDictionary dictionary];
     _reported = [NSMutableSet set];
     _lastFailure = [NSMutableDictionary dictionary];
@@ -130,6 +136,12 @@ static NSString *NSOGCHexData(NSData *data) {
     self->_wantsRunning = YES;
     [self setRunning:YES];
     [self log:@"starting"];
+#if TARGET_OS_OSX
+    if (self->_usesUSB)
+      [self startUSB];
+#endif
+    if (!self->_usesBluetooth)
+      return;
     if (self->_central == nil)
       self->_central = [[CBCentralManager alloc]
           initWithDelegate:self
@@ -149,8 +161,15 @@ static NSString *NSOGCHexData(NSData *data) {
     if (self->_central.state == CBManagerStatePoweredOn)
       [self->_central stopScan];
     [self setScanningFlag:NO];
-    for (NSOGCController *controller in self->_tracked.allValues)
-      [self->_central cancelPeripheralConnection:controller.peripheral];
+    for (NSOGCController *controller in self->_tracked.allValues) {
+      if (controller.wired)
+        [self wiredControllerGone:controller];
+      else
+        [self->_central cancelPeripheralConnection:controller.peripheral];
+    }
+#if TARGET_OS_OSX
+    [self stopUSB];
+#endif
     [self log:@"stopped"];
   });
 }
@@ -164,7 +183,12 @@ static NSString *NSOGCHexData(NSData *data) {
 
 - (void)disconnectController:(NSOGCController *)controller {
   dispatch_async(_queue, ^{
-    if (self->_tracked[controller.identifier] == controller)
+    if (self->_tracked[controller.identifier] != controller)
+      return;
+    // A wired controller is set up again when it is plugged back in.
+    if (controller.wired)
+      [self wiredControllerGone:controller];
+    else
       [self->_central cancelPeripheralConnection:controller.peripheral];
   });
 }
@@ -288,7 +312,8 @@ static NSString *NSOGCHexData(NSData *data) {
 }
 
 - (void)controllerDidBecomeReady:(NSOGCController *)controller {
-  [self rememberIdentifier:controller.identifier];
+  if (!controller.wired)
+    [self rememberIdentifier:controller.identifier];
   [_lastFailure removeObjectForKey:controller.identifier];
   NSMutableIndexSet *used = [NSMutableIndexSet indexSet];
   for (NSOGCController *other in _tracked.allValues)
@@ -308,9 +333,118 @@ static NSString *NSOGCHexData(NSData *data) {
 
 - (void)controllerDidFail:(NSOGCController *)controller reason:(NSString *)reason {
   [self log:@"%@: setup failed: %@", controller.name, reason];
+  if (controller.wired) {
+    [self wiredControllerGone:controller];
+    return;
+  }
   _lastFailure[controller.identifier] = @(CFAbsoluteTimeGetCurrent());
   [_central cancelPeripheralConnection:controller.peripheral];
 }
+
+- (void)wiredControllerGone:(NSOGCController *)controller {
+  BOOL wasReady = controller.status == NSOGCControllerStatusReady;
+  [controller didDisconnect];
+  [_tracked removeObjectForKey:controller.identifier];
+  if (wasReady) {
+    [self refreshReadyControllers];
+    [self notifyDelegate:^(id<NSOGCManagerDelegate> delegate) {
+      [delegate manager:self didDisconnectController:controller];
+    } selector:@selector(manager:didDisconnectController:)];
+  }
+  [self updateScanning];
+}
+
+#pragma mark - USB (macOS)
+
+#if TARGET_OS_OSX
+static void NSOGCHIDMatched(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
+  (void)result;
+  (void)sender;
+  [(__bridge NSOGCManager *)context wiredDeviceAppeared:device];
+}
+
+static void NSOGCHIDRemoved(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
+  (void)result;
+  (void)sender;
+  [(__bridge NSOGCManager *)context wiredDeviceRemoved:device];
+}
+
+// Devices of a manager activated on a dispatch queue take no callbacks of
+// their own, so reports come here, with the device as the sender.
+static void NSOGCHIDReport(void *context, IOReturn result, void *sender, IOHIDReportType type,
+                           uint32_t reportID, uint8_t *report, CFIndex length) {
+  (void)result;
+  (void)type;
+  (void)reportID;
+  NSOGCController *controller =
+      [(__bridge NSOGCManager *)context wiredControllerForDevice:(IOHIDDeviceRef)sender];
+  [controller handleUSBReport:report length:(NSUInteger)length];
+}
+
+// HID callbacks run on the manager's queue, like CoreBluetooth's.
+- (void)startUSB {
+  if (_hidManager != NULL)
+    return;
+  _hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+  NSDictionary *matching = @{
+    @kIOHIDVendorIDKey : @(NSOGC_VENDOR_ID),
+    @kIOHIDProductIDKey : @(NSOGC_PRODUCT_ID),
+  };
+  IOHIDManagerSetDeviceMatching(_hidManager, (__bridge CFDictionaryRef)matching);
+  IOHIDManagerRegisterDeviceMatchingCallback(_hidManager, NSOGCHIDMatched, (__bridge void *)self);
+  IOHIDManagerRegisterDeviceRemovalCallback(_hidManager, NSOGCHIDRemoved, (__bridge void *)self);
+  IOHIDManagerRegisterInputReportCallback(_hidManager, NSOGCHIDReport, (__bridge void *)self);
+  IOHIDManagerSetDispatchQueue(_hidManager, _queue);
+  IOHIDManagerRef manager = _hidManager;
+  IOHIDManagerSetCancelHandler(_hidManager, ^{
+    CFRelease(manager);
+  });
+  IOReturn opened = IOHIDManagerOpen(_hidManager, kIOHIDOptionsTypeNone);
+  if (opened != kIOReturnSuccess)
+    [self log:@"USB: cannot open HID devices (0x%08X)", opened];
+  IOHIDManagerActivate(_hidManager);
+  [self log:@"USB: watching for wired controllers"];
+}
+
+- (void)stopUSB {
+  if (_hidManager == NULL)
+    return;
+  IOHIDManagerClose(_hidManager, kIOHIDOptionsTypeNone);
+  IOHIDManagerCancel(_hidManager);
+  _hidManager = NULL;
+}
+
+- (NSOGCController *)wiredControllerForDevice:(IOHIDDeviceRef)device {
+  for (NSOGCController *controller in _tracked.allValues)
+    if (controller.wired && controller.hidDevice == device)
+      return controller;
+  return nil;
+}
+
+- (void)wiredDeviceAppeared:(IOHIDDeviceRef)device {
+  if (!_wantsRunning || [self wiredControllerForDevice:device] != nil)
+    return;
+  if ([self readyCount] >= _maximumControllers) {
+    [self log:@"USB: a controller is plugged in, but %lu are connected already",
+              (unsigned long)_maximumControllers];
+    return;
+  }
+  NSOGCController *controller = [[NSOGCController alloc] initWithHIDDevice:device
+                                                                   manager:self
+                                                                     queue:_queue
+                                                             callbackQueue:_callbackQueue];
+  _tracked[controller.identifier] = controller;
+  [controller startWired];
+}
+
+- (void)wiredDeviceRemoved:(IOHIDDeviceRef)device {
+  NSOGCController *controller = [self wiredControllerForDevice:device];
+  if (controller == nil)
+    return;
+  [self log:@"%@ unplugged", controller.name];
+  [self wiredControllerGone:controller];
+}
+#endif
 
 #pragma mark - CBCentralManagerDelegate
 
@@ -325,11 +459,19 @@ static NSString *NSOGCHexData(NSData *data) {
   if (available) {
     [self resume];
   } else {
-    // Bluetooth went away: every connection is gone with it.
+    // Bluetooth went away, and every Bluetooth connection with it.
     [self setScanningFlag:NO];
-    for (NSOGCController *controller in _tracked.allValues)
+    for (NSOGCController *controller in _tracked.allValues) {
+      if (controller.wired)
+        continue;
+      BOOL wasReady = controller.status == NSOGCControllerStatusReady;
       [controller didDisconnect];
-    [_tracked removeAllObjects];
+      [_tracked removeObjectForKey:controller.identifier];
+      if (wasReady)
+        [self notifyDelegate:^(id<NSOGCManagerDelegate> delegate) {
+          [delegate manager:self didDisconnectController:controller];
+        } selector:@selector(manager:didDisconnectController:)];
+    }
     [self refreshReadyControllers];
   }
 }

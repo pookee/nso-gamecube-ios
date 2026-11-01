@@ -2,7 +2,7 @@
 
 Use the Nintendo Switch Online GameCube controller made for the Switch 2
 (vendor `0x057E`, product `0x2073`) in your own iPhone, iPad or Mac app, over
-Bluetooth LE.
+Bluetooth LE, and on a Mac over USB too.
 
 iOS has no driver for this controller: it speaks Nintendo's own BLE protocol,
 so the system never shows it as a game controller and `GCController` never
@@ -21,6 +21,9 @@ a game on it:
 - a player-LED write once a second keeps the link up (without one the
   controller drops the connection after about 40 seconds).
 
+Over USB on a Mac (macOS 27) it is set up as soon as it is plugged in and
+sends 165 to 200 reports a second.
+
 Not verified yet: rumble on the controller itself, waking a remembered
 controller with a button press instead of SYNC, two controllers at once.
 
@@ -33,6 +36,9 @@ connection interval and an app cannot change it. That is enough for a 30 or
 An iOS app cannot create a controller for the whole system (there is no
 equivalent of ViGEm or uinput), so the controller works in the apps that
 include this library, not in every game on the phone.
+
+iOS and iPadOS give apps no access to USB devices, so wired mode is macOS
+only; on an iPhone or iPad the controller connects over Bluetooth.
 
 ## Add it to an app
 
@@ -72,12 +78,14 @@ Then press SYNC on the controller. Once set up it is remembered, and a later
 
 | API | What it does |
 |---|---|
-| `start()` / `stop()` | turn Bluetooth on and look for controllers / disconnect everything and stop |
+| `start()` / `stop()` | turn Bluetooth (and USB on a Mac) on and look for controllers / disconnect everything and stop |
+| `usesBluetooth`, `usesUSB` | which transports `start` uses, both on by default |
 | `controllers` | connected controllers in player order (also the player LEDs) |
 | `maximumControllers` | stop scanning once this many are connected (4 by default) |
 | `isScanning`, `hasRememberedControllers` | for a status line in your UI |
 | `disconnect(_:)`, `forgetControllers()` | drop one controller; forget the remembered ones |
 | `controller.setRumble(_:)` | rumble on or off |
+| `controller.isWired` | connected with a USB cable rather than over Bluetooth |
 | `controller.calibration` | replace the default stick ranges, dead zone and trigger travel |
 | `controller.rawInput` | the values as the controller sent them |
 
@@ -113,9 +121,21 @@ picked by UUID and by their order in the Nintendo service:
 | Input | 63-byte reports in the GameCube layout on `8261CBA1-9435-420C-84D6-F0C75A2C8E4D`; `…7FD2` starts with another layout and stops after the default report command |
 | Keep alive | the player-LED command again, once a second |
 
+Over USB the controller is a HID gamepad that stays silent until two
+commands reach the bulk OUT endpoint (`0x02`) of its vendor interface 1: the
+default report and the player LEDs, with `0x00` instead of `0x01` as their
+interface byte. It then sends 64-byte HID input reports with report ID `0x0A`,
+followed by the same 63-byte native layout. Rumble goes to the same endpoint.
+
 The report layout and every command frame are in
 [`nsogc_protocol.h`](Sources/NSOGCKit/include/nsogc_protocol.h): plain C with
 no platform dependency and unit tests (`swift test`).
+
+## Monitor (macOS)
+
+`swift run nsogc-monitor` prints every connected controller's input twice a
+second, over USB and Bluetooth (`--usb-only` leaves Bluetooth off,
+`--seconds N` stops after N seconds).
 
 ## Test app
 
